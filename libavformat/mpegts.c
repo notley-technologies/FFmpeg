@@ -3001,6 +3001,16 @@ static void pmt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
             }
         }
         p = desc_list_end;
+
+        /* synchronous KLV - see MISB ST 1402 */
+        if (st->codecpar->codec_id == AV_CODEC_ID_SMPTE_KLV) {
+            int profile = stream_type == STREAM_TYPE_METADATA ?
+                          AV_PROFILE_KLVA_SYNC : AV_PROFILE_KLVA_ASYNC;
+            if (st->codecpar->profile != profile) {
+                st->codecpar->profile = profile;
+                ffstream(st)->need_context_update = 1;
+            }
+        }
     }
 
     if (!ts->pids[pcr_pid])
