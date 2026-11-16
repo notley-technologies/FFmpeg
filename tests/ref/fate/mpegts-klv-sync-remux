@@ -1,0 +1,23 @@
+865792945482f2d08b7e190b822ed5c2 *tests/data/fate/mpegts-klv-sync-remux.mpegts
+7144 tests/data/fate/mpegts-klv-sync-remux.mpegts
+#tb 0: 1/90000
+#media_type 0: data
+#codec_id 0: klv
+0,          0,          0,        0,      154, 0x13552257, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,      18000,      18000,        0,      154, 0x45492365, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,      36000,      36000,        0,      154, 0x763f2374, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,      54000,      54000,        0,       52, 0xb777098a, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,      54000,      54000,        0,       52, 0x58700c5e, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,      54000,      54000,        0,       50, 0x608b0e9a, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,      72000,      72000,        0,      154, 0x52b32294, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,      90000,      90000,        0,      154, 0x84a723a2, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,     108000,     108000,        0,      154, 0xb69b24b0, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,     126000,     126000,        0,       52, 0xbe1d09cb, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,     126000,     126000,        0,       52, 0x60b00cea, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,     126000,     126000,        0,       50, 0x59c50d0a, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,     144000,     144000,        0,      154, 0x584722cf, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+0,     162000,     162000,        0,      154, 0x893d22de, S=1, MPEGTS Stream ID,        1, 0x00fc00fc
+[STREAM]
+codec_name=klv
+profile=0
+[/STREAM]
