@@ -255,6 +255,7 @@ typedef struct MpegTSWriteStream {
     int cc;
     int discontinuity;
     int payload_size;
+    int stream_type;
     int first_timestamp_checked; ///< first pts/dts check needed
     int prev_payload_key;
     int64_t payload_pts;
@@ -270,6 +271,9 @@ typedef struct MpegTSWriteStream {
     /* For Opus */
     int opus_queued_samples;
     int opus_pending_trim_start;
+
+    /* For metadata streams */
+    uint8_t metadata_au_cell_seq;
 
     DVBAC3Descriptor *dvb_ac3_desc;
 
@@ -592,7 +596,7 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
             break;
         }
 
-        stream_type = ts->m2ts_mode ? get_m2ts_stream_type(s, st) : get_dvb_stream_type(s, st);
+        stream_type = ts_st->stream_type;
 
         *q++ = stream_type;
         put16(&q, 0xe000 | ts_st->pid);
@@ -885,6 +889,8 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
         case AVMEDIA_TYPE_DATA:
             if (codec_id == AV_CODEC_ID_SMPTE_KLV) {
                 put_registration_descriptor(&q, MKTAG('K', 'L', 'V', 'A'));
+                if (stream_type == STREAM_TYPE_METADATA) /* see MISB ST 1402 */
+                    put_metadata_descriptor(&q, 0x0100, "KLVA");
             } else if (codec_id == AV_CODEC_ID_SMPTE_2038) {
                 put_registration_descriptor(&q, MKTAG('V', 'A', 'N', 'C'));
             } else if (codec_id == AV_CODEC_ID_TIMED_ID3) {
@@ -1261,6 +1267,9 @@ static int mpegts_init(AVFormatContext *s)
             return AVERROR(ENOMEM);
         }
 
+        ts_st->stream_type = ts->m2ts_mode ? get_m2ts_stream_type(s, st)
+                                           : get_dvb_stream_type(s, st);
+
         /* MPEG pid values < 16 are reserved. Applications which set st->id in
          * this range are assigned a calculated pid. */
         if (st->id < 16) {
@@ -1583,7 +1592,9 @@ static int get_pes_stream_id(AVFormatContext *s, AVStream *st, int stream_id, in
                st->codecpar->codec_id == AV_CODEC_ID_TIMED_ID3) {
         return STREAM_ID_PRIVATE_STREAM_1;
     } else if (st->codecpar->codec_type == AVMEDIA_TYPE_DATA) {
+        MpegTSWriteStream *ts_st = st->priv_data;
         if (st->codecpar->codec_id == AV_CODEC_ID_SMPTE_KLV &&
+            ts_st->stream_type != STREAM_TYPE_METADATA &&
             stream_id == STREAM_ID_PRIVATE_STREAM_1) /* asynchronous KLV */
             *async = 1;
         return stream_id != -1 ? stream_id : STREAM_ID_METADATA_STREAM;
@@ -1999,6 +2010,44 @@ static uint8_t *h26x_prefix_aud(const uint8_t *aud, const int aud_size,
     return data;
 }
 
+/* cell data that fits in one PES packet with PTS, DTS and cell header */
+#define METADATA_AU_CELL_MAX_DATA (0xffff - 3 - 10 - 5)
+
+/* metadata access unit cells - see ISO/IEC 13818-1 */
+static int mpegts_write_metadata_au(AVFormatContext *s, AVStream *st,
+                                    const uint8_t *buf, int size,
+                                    int64_t pts, int64_t dts, int key,
+                                    int stream_id)
+{
+    MpegTSWriteStream *ts_st = st->priv_data;
+    uint8_t *cell = av_malloc(5 + FFMIN(size, METADATA_AU_CELL_MAX_DATA));
+    int first = 1;
+
+    if (!cell)
+        return AVERROR(ENOMEM);
+
+    do {
+        int len = FFMIN(size, METADATA_AU_CELL_MAX_DATA);
+        int last = len == size;
+        /* 3: complete access unit, 2: first, 0: middle, 1: last fragment */
+        int fragment = (first << 1) | last;
+
+        cell[0] = 0;                               /* metadata service ID */
+        cell[1] = ts_st->metadata_au_cell_seq++;   /* sequence number */
+        cell[2] = fragment << 6 | 1 << 4 | 0x0f;   /* random access */
+        AV_WB16(cell + 3, len);
+        memcpy(cell + 5, buf, len);
+        mpegts_write_pes(s, st, cell, 5 + len, pts, dts, key, stream_id);
+
+        buf  += len;
+        size -= len;
+        first = 0;
+    } while (size > 0);
+
+    av_free(cell);
+    return 0;
+}
+
 #define H264_NAL_TYPE(state) (state & 0x1f)
 #define HEVC_NAL_TYPE(state) ((state & 0x7e) >> 1)
 #define VVC_NAL_TYPE(state)  ((state >> 11) & 0x1f)
@@ -2342,6 +2391,10 @@ static int mpegts_write_packet_internal(AVFormatContext *s, AVPacket *pkt)
         mpegts_write_pes(s, st, buf, size, pts, dts,
                          pkt->flags & AV_PKT_FLAG_KEY, stream_id);
         return 0;
+    } else if (ts_st->stream_type == STREAM_TYPE_METADATA &&
+               get_pes_stream_id(s, st, stream_id, &(int){0}) == STREAM_ID_METADATA_STREAM) {
+        return mpegts_write_metadata_au(s, st, buf, size, pts, dts,
+                                        pkt->flags & AV_PKT_FLAG_KEY, stream_id);
     }
 
     if (ts_st->payload_size && (ts_st->payload_size + size > ts->pes_payload_size ||
