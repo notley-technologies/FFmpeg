@@ -3219,6 +3219,11 @@ and @code{service_name}. If they are not set the default for
 @code{service_provider} is @samp{FFmpeg} and the default for
 @code{service_name} is @samp{Service01}.
 
+Packets of streams muxed as metadata streams (stream type 0x15 with PES
+stream ID 0xfc, such as SMPTE KLV with profile 0, synchronous KLV) are
+carried in metadata access unit cells. The muxer writes the cell headers,
+so each packet must contain one bare metadata access unit.
+
 @subsection Options
 
 The muxer options are:
