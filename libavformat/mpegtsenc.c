@@ -360,6 +360,22 @@ static void put_registration_descriptor(uint8_t **q_ptr, uint32_t tag)
     *q_ptr = q;
 }
 
+static void put_metadata_descriptor(uint8_t **q_ptr, int app_format,
+                                    const char *format_id)
+{
+    uint8_t *q = *q_ptr;
+    *q++ = METADATA_DESCRIPTOR;
+    *q++ = app_format == 0xffff ? 13 : 9;
+    put16(&q, app_format);      /* metadata application format */
+    if (app_format == 0xffff)
+        putbuf(&q, format_id, 4);
+    *q++ = 0xff;                /* metadata format */
+    putbuf(&q, format_id, 4);
+    *q++ = 0;                   /* metadata service ID */
+    *q++ = 0xF;                 /* decoder_config_flags|DSM-CC_flag|reserved */
+    *q_ptr = q;
+}
+
 static int get_dvb_stream_type(AVFormatContext *s, AVStream *st)
 {
     MpegTSWrite *ts = s->priv_data;
@@ -872,15 +888,7 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
             } else if (codec_id == AV_CODEC_ID_SMPTE_2038) {
                 put_registration_descriptor(&q, MKTAG('V', 'A', 'N', 'C'));
             } else if (codec_id == AV_CODEC_ID_TIMED_ID3) {
-                const char *tag = "ID3 ";
-                *q++ = METADATA_DESCRIPTOR;
-                *q++ = 13;
-                put16(&q, 0xffff);    /* metadata application format */
-                putbuf(&q, tag, strlen(tag));
-                *q++ = 0xff;        /* metadata format */
-                putbuf(&q, tag, strlen(tag));
-                *q++ = 0;            /* metadata service ID */
-                *q++ = 0xF;          /* metadata_locator_record_flag|MPEG_carriage_flags|reserved */
+                put_metadata_descriptor(&q, 0xffff, "ID3 ");
             }
             break;
         }
