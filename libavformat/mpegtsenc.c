@@ -898,6 +898,11 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
         case AVMEDIA_TYPE_DATA:
             if (codec_id == AV_CODEC_ID_SMPTE_KLV) {
                 put_registration_descriptor(&q, MKTAG('K', 'L', 'V', 'A'));
+                /* A metadata stream must be described by a metadata_descriptor;
+                 * metadata_application_format 0x0100 is the value MISB ST 1402
+                 * uses for KLV. */
+                if (stream_type == STREAM_TYPE_METADATA)
+                    put_metadata_descriptor(&q, 0x0100, "KLVA");
             } else if (codec_id == AV_CODEC_ID_SMPTE_2038) {
                 put_registration_descriptor(&q, MKTAG('V', 'A', 'N', 'C'));
             } else if (codec_id == AV_CODEC_ID_TIMED_ID3) {
