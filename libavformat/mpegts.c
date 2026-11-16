@@ -288,6 +288,7 @@ typedef struct PESContext {
     int data_index;
     int flags; /**< copied to the AVPacket flags */
     int PES_packet_length;
+    int metadata_au_cell_warned;
     int pes_header_size;
     int extended_stream_id;
     uint8_t stream_id;
@@ -1099,6 +1100,31 @@ end:
     return ret;
 }
 
+static void unwrap_metadata_au_cells(PESContext *pes, AVPacket *pkt)
+{
+    const uint8_t *p = pkt->data, *end = pkt->data + pkt->size;
+    uint8_t *q = pkt->data;
+
+    while (end - p >= 5)
+        p += 5 + AV_RB16(p + 3);
+    if (p != end) {
+        if (!pes->metadata_au_cell_warned)
+            av_log(pes->stream, AV_LOG_WARNING, "PID %d: metadata stream payload "
+                   "is not made of metadata access unit cells\n", pes->pid);
+        pes->metadata_au_cell_warned = 1;
+        return;
+    }
+
+    p = pkt->data;
+    while (p < end) {
+        int len = AV_RB16(p + 3);
+        memmove(q, p + 5, len);
+        q += len;
+        p += 5 + len;
+    }
+    pkt->size = q - pkt->data;
+}
+
 static int new_pes_packet(PESContext *pes, AVPacket *pkt)
 {
     uint8_t *sd;
@@ -1131,6 +1157,11 @@ static int new_pes_packet(PESContext *pes, AVPacket *pkt)
             pkt->size -= header_size;
         }
     }
+
+    /* remove metadata access unit cell headers - see ISO/IEC 13818-1 */
+    if (pes->stream_type == STREAM_TYPE_METADATA &&
+        pes->stream_id == STREAM_ID_METADATA_STREAM)
+        unwrap_metadata_au_cells(pes, pkt);
 
     memset(pkt->data + pkt->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
 
@@ -1418,15 +1449,6 @@ skip:
                     pes->pes_header_size += sl_header_bytes;
                     p += sl_header_bytes;
                     buf_size -= sl_header_bytes;
-                }
-                if (pes->stream_type == STREAM_TYPE_METADATA &&
-                    pes->stream_id == STREAM_ID_METADATA_STREAM &&
-                    pes->st->codecpar->codec_id == AV_CODEC_ID_SMPTE_KLV &&
-                    buf_size >= 5) {
-                    /* skip metadata access unit header - see MISB ST 1402 */
-                    pes->pes_header_size += 5;
-                    p += 5;
-                    buf_size -= 5;
                 }
                 if (   pes->ts->fix_teletext_pts
                     && (   pes->st->codecpar->codec_id == AV_CODEC_ID_DVB_TELETEXT
