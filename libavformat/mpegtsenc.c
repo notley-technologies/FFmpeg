@@ -1621,12 +1621,15 @@ static int get_pes_stream_id(AVFormatContext *s, AVStream *st, int stream_id, in
     } else if (st->codecpar->codec_type == AVMEDIA_TYPE_DATA &&
                st->codecpar->codec_id == AV_CODEC_ID_TIMED_ID3) {
         return STREAM_ID_PRIVATE_STREAM_1;
-    } else if (st->codecpar->codec_type == AVMEDIA_TYPE_DATA) {
+    } else if (st->codecpar->codec_type == AVMEDIA_TYPE_DATA &&
+               st->codecpar->codec_id == AV_CODEC_ID_SMPTE_KLV) {
         MpegTSWriteStream *ts_st = st->priv_data;
-        if (st->codecpar->codec_id == AV_CODEC_ID_SMPTE_KLV &&
-            ts_st->stream_type != STREAM_TYPE_METADATA &&
-            stream_id == STREAM_ID_PRIVATE_STREAM_1) /* asynchronous KLV */
-            *async = 1;
+        /* synchronous or asynchronous KLV - see MISB ST 1402 */
+        if (ts_st->stream_type == STREAM_TYPE_METADATA)
+            return STREAM_ID_METADATA_STREAM;
+        *async = 1;
+        return STREAM_ID_PRIVATE_STREAM_1;
+    } else if (st->codecpar->codec_type == AVMEDIA_TYPE_DATA) {
         return stream_id != -1 ? stream_id : STREAM_ID_METADATA_STREAM;
     } else {
         return STREAM_ID_PRIVATE_STREAM_1;
