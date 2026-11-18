@@ -82,8 +82,9 @@ fate-mpegts-dvbsub-multi-service: CMD = \
 
 # Metadata streams (stream_type 0x15, stream_id 0xfc) carry metadata access
 # unit cells (ISO/IEC 13818-1 2.12.4). On remux the demuxer must remove the
-# headers of all cells, including fragments, and the muxer must write cells
-# and the metadata descriptor again. The sample holds synchronous KLV.
+# headers of all cells and join access units fragmented over several cells and
+# PES packets, and the muxer must write cells and the metadata descriptors
+# again. The sample holds synchronous KLV.
 FATE_MPEGTS_FFMPEG_FFPROBE-$(call REMUX, MPEGTS) += fate-mpegts-klv-sync-remux
 fate-mpegts-klv-sync-remux: CMD = transcode mpegts $(TARGET_SAMPLES)/mpegts/klv_sync.ts mpegts \
   "-map 0:d -c copy" "-map 0:d -c copy" "-show_entries stream=codec_name,profile"

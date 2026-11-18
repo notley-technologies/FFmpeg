@@ -289,6 +289,8 @@ typedef struct PESContext {
     int flags; /**< copied to the AVPacket flags */
     int PES_packet_length;
     int metadata_au_cell_warned;
+    AVPacket *metadata_au;          /**< fragments of an incomplete metadata access unit */
+    uint8_t metadata_au_cell_seq;   /**< sequence number of its next cell */
     int pes_header_size;
     int extended_stream_id;
     uint8_t stream_id;
@@ -631,6 +633,10 @@ static void mpegts_close_filter(MpegTSContext *ts, MpegTSFilter *filter)
     else if (filter->type == MPEGTS_PES) {
         PESContext *pes = filter->u.pes_filter.opaque;
         av_buffer_unref(&pes->buffer);
+        if (pes->metadata_au && pes->metadata_au->data)
+            av_log(ts->stream, AV_LOG_WARNING, "PID %d: incomplete metadata "
+                   "access unit discarded\n", pid);
+        av_packet_free(&pes->metadata_au);
         /* referenced private data will be freed later in
          * avformat_close_input (pes->st->priv_data == pes) */
         if (!pes->st || pes->st->priv_data != pes) {
@@ -1100,7 +1106,8 @@ end:
     return ret;
 }
 
-static void unwrap_metadata_au_cells(PESContext *pes, AVPacket *pkt)
+static void unwrap_metadata_au_cells(PESContext *pes, AVPacket *pkt,
+                                     int *first, int *last)
 {
     const uint8_t *p = pkt->data, *end = pkt->data + pkt->size;
     uint8_t *q = pkt->data;
@@ -1118,6 +1125,10 @@ static void unwrap_metadata_au_cells(PESContext *pes, AVPacket *pkt)
     p = pkt->data;
     while (p < end) {
         int len = AV_RB16(p + 3);
+        /* sequence number and cell_fragment_indication */
+        *last = p[1] << 2 | p[2] >> 6;
+        if (*first < 0)
+            *first = *last;
         memmove(q, p + 5, len);
         q += len;
         p += 5 + len;
@@ -1125,8 +1136,53 @@ static void unwrap_metadata_au_cells(PESContext *pes, AVPacket *pkt)
     pkt->size = q - pkt->data;
 }
 
+/* join access unit fragments that span PES packets */
+static int join_metadata_au_fragments(PESContext *pes, AVPacket *pkt,
+                                      int first, int last)
+{
+    AVPacket *au = pes->metadata_au;
+    int continued = first >= 0 && !(first & 2);   /* middle or last fragment */
+    int ret;
+
+    if (au && au->data) {
+        /* the next fragment, if the access unit stays within max_packet_size */
+        if (continued && first >> 2 == pes->metadata_au_cell_seq &&
+            au->size + pkt->size <= pes->ts->max_packet_size) {
+            int size = au->size;
+            ret = av_grow_packet(au, pkt->size);
+            if (ret < 0)
+                return ret;
+            memcpy(au->data + size, pkt->data, pkt->size);
+            au->flags |= pkt->flags & AV_PKT_FLAG_CORRUPT;
+            av_packet_unref(pkt);
+            av_packet_move_ref(pkt, au);
+            continued = 0;
+        } else {
+            av_log(pes->stream, AV_LOG_WARNING, "PID %d: incomplete metadata "
+                   "access unit discarded\n", pes->pid);
+            av_packet_unref(au);
+        }
+    }
+    if (continued)
+        pkt->flags |= AV_PKT_FLAG_CORRUPT;  /* the start of the access unit is missing */
+
+    /* a first or middle fragment: wait for the rest of the access unit */
+    if (last >= 0 && !(last & 1)) {
+        if (!au && !(au = pes->metadata_au = av_packet_alloc()))
+            return AVERROR(ENOMEM);
+        av_packet_move_ref(au, pkt);
+        pes->metadata_au_cell_seq = (last >> 2) + 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* returns 1 if no packet was output */
 static int new_pes_packet(PESContext *pes, AVPacket *pkt)
 {
+    int au_cells = pes->stream_type == STREAM_TYPE_METADATA &&
+                   pes->stream_id == STREAM_ID_METADATA_STREAM;
+    int first = -1, last = -1;
     uint8_t *sd;
 
     av_packet_unref(pkt);
@@ -1159,9 +1215,8 @@ static int new_pes_packet(PESContext *pes, AVPacket *pkt)
     }
 
     /* remove metadata access unit cell headers - see ISO/IEC 13818-1 */
-    if (pes->stream_type == STREAM_TYPE_METADATA &&
-        pes->stream_id == STREAM_ID_METADATA_STREAM)
-        unwrap_metadata_au_cells(pes, pkt);
+    if (au_cells)
+        unwrap_metadata_au_cells(pes, pkt, &first, &last);
 
     memset(pkt->data + pkt->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
 
@@ -1190,6 +1245,8 @@ static int new_pes_packet(PESContext *pes, AVPacket *pkt)
             return ret;
     }
 
+    if (au_cells)
+        return join_metadata_au_fragments(pes, pkt, first, last);
     return 0;
 }
 
@@ -1301,7 +1358,8 @@ static int mpegts_push_data(MpegTSFilter *filter,
             ret = new_pes_packet(pes, ts->pkt);
             if (ret < 0)
                 return ret;
-            ts->stop_parse = 1;
+            if (!ret)
+                ts->stop_parse = 1;
         } else {
             reset_pes_packet_state(pes);
         }
@@ -1533,7 +1591,8 @@ skip:
                         return ret;
                     pes->PES_packet_length = 0;
                     max_packet_size = ts->max_packet_size;
-                    ts->stop_parse = 1;
+                    if (!ret)
+                        ts->stop_parse = 1;
                 } else if (pes->data_index == 0 &&
                            buf_size > max_packet_size) {
                     // pes packet size is < ts size packet and pes data is padded with STUFFING_BYTE
@@ -1554,11 +1613,12 @@ skip:
                  * a couple of seconds to milliseconds for properly muxed files. */
                 if (!ts->stop_parse && pes->PES_packet_length &&
                     pes->pes_header_size + pes->data_index == pes->PES_packet_length + PES_START_SIZE) {
-                    ts->stop_parse = 1;
                     ret = new_pes_packet(pes, ts->pkt);
                     pes->state = MPEGTS_SKIP;
                     if (ret < 0)
                         return ret;
+                    if (!ret)
+                        ts->stop_parse = 1;
                 }
             } while (0);
             buf_size = 0;
@@ -3494,6 +3554,8 @@ static int handle_packets(MpegTSContext *ts, int64_t nb_packets)
                 if (ts->pids[i]->type == MPEGTS_PES) {
                     PESContext *pes = ts->pids[i]->u.pes_filter.opaque;
                     av_buffer_unref(&pes->buffer);
+                    if (pes->metadata_au)
+                        av_packet_unref(pes->metadata_au);
                     pes->data_index = 0;
                     pes->state = MPEGTS_SKIP; /* skip until pes header */
                 } else if (ts->pids[i]->type == MPEGTS_SECTION) {
@@ -3772,12 +3834,14 @@ static int mpegts_read_packet(AVFormatContext *s, AVPacket *pkt)
             if (ts->pids[i] && ts->pids[i]->type == MPEGTS_PES) {
                 PESContext *pes = ts->pids[i]->u.pes_filter.opaque;
                 if (pes->state == MPEGTS_PAYLOAD && pes->data_index > 0) {
-                    ret = new_pes_packet(pes, pkt);
-                    if (ret < 0)
-                        return ret;
+                    int err = new_pes_packet(pes, pkt);
+                    if (err < 0)
+                        return err;
                     pes->state = MPEGTS_SKIP;
-                    ret = 0;
-                    break;
+                    if (!err) {
+                        ret = 0;
+                        break;
+                    }
                 }
             }
     }
