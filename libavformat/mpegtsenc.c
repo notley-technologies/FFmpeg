@@ -380,6 +380,21 @@ static void put_metadata_descriptor(uint8_t **q_ptr, int app_format,
     *q_ptr = q;
 }
 
+static void put_metadata_std_descriptor(uint8_t **q_ptr, int input_leak_rate,
+                                        int buffer_size, int output_leak_rate)
+{
+    uint8_t *q = *q_ptr;
+    *q++ = METADATA_STD_DESCRIPTOR;
+    *q++ = 9;
+    *q++ = 0xc0 | input_leak_rate >> 16;   /* in units of 400 bit/s */
+    put16(&q, input_leak_rate);
+    *q++ = 0xc0 | buffer_size >> 16;       /* in units of 1024 bytes */
+    put16(&q, buffer_size);
+    *q++ = 0xc0 | output_leak_rate >> 16;  /* in units of 400 bit/s */
+    put16(&q, output_leak_rate);
+    *q_ptr = q;
+}
+
 static int get_dvb_stream_type(AVFormatContext *s, AVStream *st)
 {
     MpegTSWrite *ts = s->priv_data;
@@ -888,9 +903,24 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
             break;
         case AVMEDIA_TYPE_DATA:
             if (codec_id == AV_CODEC_ID_SMPTE_KLV) {
+                int sync = stream_type == STREAM_TYPE_METADATA; /* see MISB ST 1402 */
+
+                /* 6 bytes registration descriptor, 11 bytes metadata descriptor,
+                 * 11 bytes metadata STD descriptor */
+                if (sync && q - data > SECTION_LENGTH - 6 - 11 - 11) {
+                    err = 1;
+                    break;
+                }
+
                 put_registration_descriptor(&q, MKTAG('K', 'L', 'V', 'A'));
-                if (stream_type == STREAM_TYPE_METADATA) /* see MISB ST 1402 */
+                if (sync) {
+                    /* the transport buffer is emptied at least at the mux rate
+                     * and the main buffer holds the largest PES packet */
+                    int leak_rate = ts->mux_rate > 1 ?
+                                    FFMIN((ts->mux_rate - 1) / 400 + 1, 0x3fffff) : 0x3fffff;
                     put_metadata_descriptor(&q, 0x0100, "KLVA");
+                    put_metadata_std_descriptor(&q, leak_rate, (6 + 0xffff + 1023) / 1024, 0);
+                }
             } else if (codec_id == AV_CODEC_ID_SMPTE_2038) {
                 put_registration_descriptor(&q, MKTAG('V', 'A', 'N', 'C'));
             } else if (codec_id == AV_CODEC_ID_TIMED_ID3) {
